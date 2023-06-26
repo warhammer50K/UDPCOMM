@@ -2,46 +2,56 @@
 
 UDPCOMM::UDPCOMM(QObject *parent) : QObject(parent)
 {
-    connect(&socket, SIGNAL(readyRead()), this, SLOT(readyRead()));
-    connect(&udp_timer, SIGNAL(timeout()), this, SLOT(udp_loop()));
-
-    init();
 }
 
-
-void UDPCOMM::init()
+void UDPCOMM::init(int usage, QHostAddress _address, quint16 _port)
 {
-    // set address
-    const QHostAddress &localhost = QHostAddress(QHostAddress::LocalHost);
-    for (const QHostAddress &_address: QNetworkInterface::allAddresses())
+    if(_address.isNull())
     {
-        if (_address.protocol() == QAbstractSocket::IPv4Protocol && _address != localhost)
-        {
-            std::cout << "Address : " << _address.toString().toStdString() << std::endl;
-            address = _address;
-            break;
-        }
+        printf("address is incorrect.\n");
+        return;
     }
 
-    // set gamepad
-    auto gamepads = QGamepadManager::instance()->connectedGamepads();
-    if(!gamepads.isEmpty())
-    {
-        gamepad = new QGamepad(*gamepads.begin(), this);
-    }
-}
-
-void UDPCOMM::init(QHostAddress _address, quint16 _port)
-{
-    // set address and port
     address = _address;
     port = _port;
 
-    // set gamepad
-    auto gamepads = QGamepadManager::instance()->connectedGamepads();
-    if(!gamepads.isEmpty())
+    if(usage == SERVER)
     {
-        gamepad = new QGamepad(*gamepads.begin(), this);
+        printf("udp server start.\n");
+
+        connect(&udp_timer, SIGNAL(timeout()), this, SLOT(udp_loop()));
+        udp_timer.start(100);
+
+        // set gamepad
+        auto gamepads = QGamepadManager::instance()->connectedGamepads();
+        if(!gamepads.isEmpty())
+        {
+            gamepad = new QGamepad(*gamepads.begin(), this);
+        }
+    }
+
+    else if(usage == CLIENT)
+    {
+        printf("udp client start.\n");
+
+        connect(&socket, SIGNAL(readyRead()), this, SLOT(readyRead()));
+        socket.bind(address, port);
+    }
+
+    else
+    {
+        printf("set udp server or client.\n");
+    }
+}
+
+void UDPCOMM::set_address_port(int usage, QHostAddress _address, quint16 _port)
+{
+    address = _address;
+    port = _port;
+
+    if(usage == CLIENT)
+    {
+        socket.bind(address, port);
     }
 }
 
@@ -57,13 +67,7 @@ void UDPCOMM::stop()
 
 void UDPCOMM::udp_loop()
 {
-    if(address.isNull())
-    {
-        printf("address is empty\n");
-        return;
-    }
-
-    stream _stream;
+    STREAM _stream;
     _stream.lx = gamepad->axisLeftX();
     _stream.ly = gamepad->axisLeftY();
     _stream.rx = gamepad->axisRightX();
@@ -79,66 +83,59 @@ void UDPCOMM::udp_loop()
 
     QByteArray data;
     QDataStream buf(&data, QIODevice::ReadWrite);
+    buf << _stream;
 
-    data.append((char)0xFF);
-    data.append((char)0xFD);
-
-    _stream.serialization(buf);
-
-    data.append((char)0x01);
-    data.append((char)0x02);
+    // set head & tail
+    data.push_front(char(0xFF));
+    data.push_front(char(0xFD));
+    data.push_back(char(0x01));
+    data.push_back(char(0x02));
 
     socket.writeDatagram(data, address, port);
-
-    //QString str;
-    //str.sprintf("lx:%.2f, ly:%.2f, rx:%.2f, ry:%.2f\n"
-    //            "x:%d, y:%d, a:%d, b:%d\n"
-    //            "l1:%d, l2:%d, r1:%d, r2:%d", lx, ly, rx, ry,
-    //            x, y, a, b,
-    //            l1, l2, r1, r2);
-    //std::cout << str.toStdString() << std::endl;
 }
 
 void UDPCOMM::readyRead()
 {
-    // echo
+    // parsing data
     if(socket.hasPendingDatagrams())
     {
-        QByteArray _buf;
-        _buf.resize(socket.pendingDatagramSize());
+        QByteArray _data;
+        _data.resize(socket.pendingDatagramSize());
 
         QHostAddress sender; quint16 senderPort;
-        socket.readDatagram(_buf.data(), _buf.size(), &sender, &senderPort);
+        socket.readDatagram(_data.data(), _data.size(), &sender, &senderPort);
 
-        if(_buf.size() > 0)
+        if(_data.size() > 0)
         {
-            buf.append(_buf);
+            data.append(_data);
 
-            if(buf.size() < 2)
+            if(data.size() < 2)
             {
                 return;
             }
 
             bool is_header = false;
-            for(int p = 0; p < buf.size()-1; p++)
+            for(int p = 0; p < data.size()-1; p++)
             {
                 // header check
-                if(buf[p] == (char)0xFF && buf[p+1] == (char)0xFD)
+                if(data[p] == (char)0xFF && data[p+1] == (char)0xFD)
                 {
-                    buf.remove(0, p);
+                    data.remove(0, p);
                     is_header = true;
                     break;
                 }
             }
 
-            // 11 3*4 +8 20 25
-            const int packet_size = 0;
-            if(is_header && buf.size() >= packet_size)
+            const int packet_size = STREAM_SIZE + 4;
+            if(is_header && data.size() >= packet_size)
             {
-                if(buf[packet_size-2] == (char)0x01 && buf[packet_size-1] == (char)0x02)
+                if(data[packet_size-2] == (char)0x01 && data[packet_size-1] == (char)0x02)
                 {
-                    // do something
+                    STREAM _stream;
+                    QDataStream _buf(&data, QIODevice::ReadWrite);
+                    _buf >> _stream;
                 }
             }
         }
-    }}
+    }
+}

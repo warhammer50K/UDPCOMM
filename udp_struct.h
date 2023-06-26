@@ -3,7 +3,12 @@
 
 #include <QDataStream>
 
-struct stream
+enum STRUCT_SIZE
+{
+    STREAM_SIZE = 24
+};
+
+struct STREAM
 {
     double lx = 0.0;
     double ly = 0.0;
@@ -18,9 +23,12 @@ struct stream
     uint8_t l2 = 0;
     uint8_t r1 = 0;
     uint8_t r2 = 0;
-    stream() {}
 
-    void serialization(QDataStream &buf);
+    STREAM()
+    {}
+
 };
+QDataStream &operator<<(QDataStream &, const STREAM &_stream);
+QDataStream &operator>>(QDataStream &, STREAM &_stream);
 
 #endif // UDP_STRUCT_H

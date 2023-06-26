@@ -15,6 +15,12 @@
 
 #include "udp_struct.h"
 
+enum USAGE
+{
+    SERVER=0,
+    CLIENT
+};
+
 class UDPCOMM : public QObject
 {
     Q_OBJECT
@@ -23,9 +29,13 @@ public:
 
     QTimer udp_timer;
 
-    void init();
+    void init(int usage, QHostAddress _address, quint16 _port);
     void start();
     void stop();
+
+    void set_address_port(int usage, QHostAddress _address, quint16 _port);
+
+    QByteArray data;
 
 signals:
 
