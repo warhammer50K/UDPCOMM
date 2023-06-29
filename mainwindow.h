@@ -17,7 +17,7 @@ public:
     MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
 
-    //UDPCOMM<STREAM> udp();
+    void init();
 
 private:
     Ui::MainWindow *ui;
