@@ -1,5 +1,4 @@
-#ifndef UDPCOMM_H
-#define UDPCOMM_H
+#pragma once
 
 // qt
 #include <QObject>
@@ -15,40 +14,66 @@
 
 #include "udp_struct.h"
 
-enum USAGE
+enum UDP_USAGE
 {
+    NONE=-1,
     SERVER=0,
     CLIENT
 };
 
-class UDPCOMM : public QObject
+template <typename STRUCT>
+class UDPCOMM
 {
-    Q_OBJECT
 public:
-    explicit UDPCOMM(QObject *parent = nullptr);
+    explicit UDPCOMM(int _usage, QHostAddress _address, qint16 _port);
+    virtual ~UDPCOMM() = default;
 
-    QTimer udp_timer;
+    UDPCOMM(const UDPCOMM& src) = default;
+    UDPCOMM<STRUCT>& operator=(const UDPCOMM& rhs) = default;
 
-    void init(int usage, QHostAddress _address, quint16 _port);
-    void start();
-    void stop();
+    UDPCOMM(UDPCOMM&& src) = default;
+    UDPCOMM<STRUCT>& operator=(UDPCOMM&& rhs) = default;
 
-    void set_address_port(int usage, QHostAddress _address, quint16 _port);
+    QUdpSocket socket;
 
-    QByteArray data;
-
-signals:
+    void set_address_port(QHostAddress _address, qint16 _port);
+    void write_dataGram(STRUCT str);
 
 
 private:
-    QGamepad *gamepad = NULL;
-    QUdpSocket socket;
-    QHostAddress address;
-    quint16 port = 9999;
-
-private slots:
-    void readyRead();
-    void udp_loop();
+    int udp_usage = NONE;
+    QHostAddress udp_address;
+    qint16 udp_port;
+    STRUCT _struct;
+    size_t struct_size;
 };
 
-#endif // UDPCOMM_H
+template <typename STRUCT>
+UDPCOMM<STRUCT>::UDPCOMM(int _usage, QHostAddress _address, qint16 _port) :
+    udp_usage(_usage),
+    udp_address(_address),
+    udp_port(_port)
+{
+    STRUCT t;
+    struct_size = sizeof(t);
+}
+
+template <typename STRUCT>
+void UDPCOMM<STRUCT>::set_address_port(QHostAddress _address, qint16 _port)
+{
+    udp_address = _address;
+    udp_port = _port;
+}
+
+template <typename STRUCT>
+void UDPCOMM<STRUCT>::write_dataGram(STRUCT str)
+{
+    QByteArray serialization_bytes;
+
+    size_t struct_size = sizeof(str);
+    serialization_bytes.resize(struct_size);
+    memcpy(serialization_bytes.data(), &str, struct_size);
+
+    socket.writeDatagram(serialization_bytes, udp_address, udp_port);
+}
+
