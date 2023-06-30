@@ -11,105 +11,118 @@
 // stl
 #include <atomic>
 #include <iostream>
-
+#include <QObject>
 #include "udp_struct.h"
 
-enum UDP_USAGE
-{
-    NONE=-1,
-    SERVER=0,
-    CLIENT
-};
 
-template <typename STRUCT>
+template <typename SENDER, typename RECEIVER>
 class UDPCOMM
 {
 public:
-    explicit UDPCOMM(int _usage, QHostAddress _address, qint16 _port);
+    explicit UDPCOMM(QHostAddress _receiver_address, qint16 _receiver_port);
+    explicit UDPCOMM(qint16 _receiver_port);
     virtual ~UDPCOMM() = default;
-
-    /*UDPCOMM(const UDPCOMM& src) = default;
-    UDPCOMM<STRUCT>& operator=(const UDPCOMM& rhs) = default;
-
-    UDPCOMM(UDPCOMM&& src) = default;
-    UDPCOMM<STRUCT>& operator=(UDPCOMM&& rhs) = default;*/
 
     QUdpSocket socket;
 
     void set_address_port(QHostAddress _address, qint16 _port);
-    void write_dataGram(STRUCT str);
+    void write_dataGram(SENDER str);
 
-    void client_callback();
-
+    void receiver_callback();
 
 private:
-    int udp_usage = NONE;
-    QHostAddress udp_address;
-    qint16 udp_port;
-    STRUCT _struct;
-    size_t struct_size;
+    QHostAddress sender_address;
+    qint16 sender_port;
+    size_t sender_struct_size;
+    SENDER sender_struct;
 
-    // client
-    QByteArray client_buf;
+    QHostAddress receiver_address;
+    qint16 receiver_port;
+    size_t receiver_struct_size;
+    RECEIVER receiver_struct;
+    QByteArray receiver_buffer;
 };
 
-template <typename STRUCT>
-UDPCOMM<STRUCT>::UDPCOMM(int _usage, QHostAddress _address, qint16 _port) :
-    udp_usage(_usage),
-    udp_address(_address),
-    udp_port(_port)
+template <typename SENDER, typename RECEIVER>
+UDPCOMM<SENDER, RECEIVER>::UDPCOMM(QHostAddress _receiver_address, qint16 _receiver_port) :
+    sender_address(_receiver_address),
+    sender_port(_receiver_port)
 {
-    STRUCT t;
-    struct_size = sizeof(t);
+    printf("Active write_dataGram, Echo receiver.\n");
+    SENDER T;
+    sender_struct_size = sizeof(T);
 
-    if(udp_usage == SERVER)
-    {
-
-    }
-    else if(udp_usage == CLIENT)
-    {
-
-    }
+    RECEIVER R;
+    receiver_struct_size = sizeof(R);
 }
 
-template <typename STRUCT>
-void UDPCOMM<STRUCT>::set_address_port(QHostAddress _address, qint16 _port)
+template <typename SENDER, typename RECEIVER>
+UDPCOMM<SENDER, RECEIVER>::UDPCOMM(qint16 _port) :
+    sender_port(_port)
 {
-    udp_address = _address;
-    udp_port = _port;
-}
-
-template <typename STRUCT>
-void UDPCOMM<STRUCT>::write_dataGram(STRUCT str)
-{
-    if(udp_usage == CLIENT)
+    QString active_address;
+    bool flag = false;
+    for(auto interface:QNetworkInterface::allInterfaces())
     {
-        printf("this function activate at [SERVER].\n");
+        for(QNetworkAddressEntry address:interface.addressEntries())
+        {
+            if(address.ip() != QHostAddress::LocalHost
+              && address.ip() == QHostAddress::AnyIPv4
+              && interface.type() == QNetworkInterface::Wifi)
+            {
+                active_address = QString(address.ip().toString());
+                sender_address = address.ip();
+                flag = true;
+            }
+            if(flag == true)
+            {
+                break;
+            }
+        }
+        if(flag == true)
+        {
+            break;
+        }
+    }
+
+    if(flag == false)
+    {
+        printf("failed connect wifi.\n");
         return;
     }
 
+    printf("bind wifi address : %s Active Echo sender.\n", active_address.toStdString().c_str());
+    SENDER T;
+    sender_struct_size = sizeof(T);
+
+    RECEIVER R;
+    receiver_struct_size = sizeof(R);
+}
+
+
+template <typename SENDER, typename RECEIVER>
+void UDPCOMM<SENDER, RECEIVER>::set_address_port(QHostAddress _address, qint16 _port)
+{
+    sender_address = _address;
+    sender_port = _port;
+}
+
+template <typename SENDER, typename RECEIVER>
+void UDPCOMM<SENDER, RECEIVER>::write_dataGram(SENDER str)
+{
     QByteArray serialization_bytes;
 
     size_t struct_size = sizeof(str);
     serialization_bytes.resize(struct_size);
     memcpy(serialization_bytes.data(), &str, struct_size);
 
-    socket.writeDatagram(serialization_bytes, udp_address, udp_port);
+    socket.writeDatagram(serialization_bytes, sender_address, sender_port);
 }
 
-
-// client
-
-template <typename STRUCT>
-void UDPCOMM<STRUCT>::client_callback()
+template <typename SENDER, typename RECEIVER>
+void UDPCOMM<SENDER, RECEIVER>::receiver_callback()
 {
-    if(udp_usage == SERVER)
-    {
-        printf("this function activate at [CLIENT].\n");
-        return;
-    }
-
-    if(struct_size == 0)
+    if(sender_struct_size == 0 || receiver_struct_size == 0)
     {
         printf("struct size is zero.\n");
         return;
@@ -125,33 +138,33 @@ void UDPCOMM<STRUCT>::client_callback()
 
         if(_buf.size() > 0)
         {
-            client_buf.append(_buf);
+            receiver_buffer.append(_buf);
 
-            if(client_buf.size() < 2)
+            if(receiver_buffer.size() < 2)
             {
                 return;
             }
 
             bool is_header = false;
-            for(int p = 0; p < client_buf.size()-1; p++)
+            for(int p = 0; p < receiver_buffer.size()-1; p++)
             {
                 // header check
-                if(client_buf[p] == (char)0xFF && client_buf[p+1] == (char)0xFD)
+                if(receiver_buffer[p] == (char)0xFF && receiver_buffer[p+1] == (char)0xFD)
                 {
-                    client_buf.remove(0, p);
+                    receiver_buffer.remove(0, p);
                     is_header = true;
                     break;
                 }
             }
 
-            const int packet_size = int(struct_size);
-            if(is_header && client_buf.size() >= packet_size)
+            const int packet_size = int(sender_struct_size);
+            if(is_header && receiver_buffer.size() >= packet_size)
             {
-                if(client_buf[packet_size-2] == (char)0x01 && client_buf[packet_size-1] == (char)0x02)
+                if(receiver_buffer[packet_size-2] == (char)0x01 && receiver_buffer[packet_size-1] == (char)0x02)
                 {
-                    uchar* body = (uchar*)client_buf.data();
-                    memcpy(&_struct, &body[2], packet_size);
-                    client_buf.remove(0, packet_size);
+                    uchar* body = (uchar*)receiver_buffer.data();
+                    memcpy(&sender_struct, &body[2], packet_size);
+                    receiver_buffer.remove(0, packet_size);
                 }
             }
         }

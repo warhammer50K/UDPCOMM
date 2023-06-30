@@ -3,11 +3,6 @@
 
 #include <QDataStream>
 
-enum STRUCT_SIZE
-{
-    STREAM_SIZE = 24
-};
-
 struct STREAM
 {
     double lx = 0.0;
@@ -28,7 +23,20 @@ struct STREAM
     {}
 
 };
-QDataStream &operator<<(QDataStream &, const STREAM &_stream);
-QDataStream &operator>>(QDataStream &, STREAM &_stream);
 
+struct MOBILE
+{
+    uint8_t x = 0;
+    uint8_t y = 0;
+    uint8_t a = 0;
+    uint8_t b = 0;
+    uint8_t l1 = 0;
+    uint8_t l2 = 0;
+    uint8_t r1 = 0;
+    uint8_t r2 = 0;
+
+    MOBILE()
+    {}
+
+};
 #endif // UDP_STRUCT_H

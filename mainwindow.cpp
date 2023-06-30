@@ -7,6 +7,9 @@ MainWindow::MainWindow(QWidget *parent)
 {
     ui->setupUi(this);
 
+    init();
+
+
 
 }
 
@@ -18,12 +21,13 @@ MainWindow::~MainWindow()
 
 void MainWindow::init()
 {
-    UDPCOMM<STREAM> _udp(SERVER, QHostAddress(QString("10.108.1.22")), qint16(2222));
+    UDPCOMM<STREAM, MOBILE> _joystick(QHostAddress(QString("10.108.1.22")), qint16(2222));
+    UDPCOMM<MOBILE, STREAM> _mobile(qint16(2222));
 
-    STREAM _stream;
+    //STREAM _stream;
 
-    _stream.a = 1.0;
-    _udp.write_dataGram(_stream);
+    //_stream.a = 1.0;
+    //_joystick.write_dataGram(_stream);
 
 
 }

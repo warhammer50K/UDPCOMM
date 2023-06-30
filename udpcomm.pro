@@ -18,11 +18,12 @@ DEFINES += QT_DEPRECATED_WARNINGS
 SOURCES += \
     main.cpp \
     mainwindow.cpp \
-    udp_struct.cpp \
+    test.cpp \
     udpcomm.cpp
 
 HEADERS += \
     mainwindow.h \
+    test.h \
     udp_struct.h \
     udpcomm.h
 
