@@ -3,7 +3,7 @@
 
 #include <QMainWindow>
 
-#include "udpcomm.h"
+#include "udpcomm.hpp"
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }

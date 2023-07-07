@@ -18,14 +18,13 @@ DEFINES += QT_DEPRECATED_WARNINGS
 SOURCES += \
     main.cpp \
     mainwindow.cpp \
-    test.cpp \
-    udpcomm.cpp
+    myudpsocket.cpp
 
 HEADERS += \
+    global_defines.h \
     mainwindow.h \
-    test.h \
-    udp_struct.h \
-    udpcomm.h
+    myudpsocket.h \
+    udpcomm.hpp
 
 FORMS += \
     mainwindow.ui
@@ -34,3 +33,8 @@ FORMS += \
 qnx: target.path = /tmp/$${TARGET}/bin
 else: unix:!android: target.path = /opt/$${TARGET}/bin
 !isEmpty(target.path): INSTALLS += target
+
+
+# TBB
+LIBS += -L/usr/lib/x86_64-linux-gnu/
+LIBS += -ltbb

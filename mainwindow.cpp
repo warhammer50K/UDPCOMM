@@ -18,16 +18,22 @@ MainWindow::~MainWindow()
     delete ui;
 }
 
-
 void MainWindow::init()
 {
-    UDPCOMM<STREAM, MOBILE> _joystick(QHostAddress(QString("10.108.1.22")), qint16(2222));
+    // set sender (write datagram to receiver)
+    UDPCOMM<STREAM, MOBILE> _joystick(qint16(3333));
+    _joystick.set_my_interface(QNetworkInterface::Ethernet);
+
     UDPCOMM<MOBILE, STREAM> _mobile(qint16(2222));
 
-    //STREAM _stream;
+    STREAM _stream;
 
-    //_stream.a = 1.0;
-    //_joystick.write_dataGram(_stream);
+    qDebug() << sizeof(_stream);
+    _stream.a = 1.0;
+    _joystick.write_dataGram(_stream);
 
+    // set receiver (echo datagram to sender)
 
+    MOBILE _m;
+    _mobile.set_echo_dataGram(_m);
 }
