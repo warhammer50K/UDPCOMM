@@ -4,6 +4,7 @@ MyUdpSocket::MyUdpSocket(QObject *parent) : QObject(parent)
 {
     connect(&socket, SIGNAL(readyRead()), this, SLOT(udp_receive_callback()));
 }
+
 void MyUdpSocket::udp_receive_callback()
 {
     if(socket.hasPendingDatagrams())

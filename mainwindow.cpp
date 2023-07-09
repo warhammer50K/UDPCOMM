@@ -8,9 +8,6 @@ MainWindow::MainWindow(QWidget *parent)
     ui->setupUi(this);
 
     init();
-
-
-
 }
 
 MainWindow::~MainWindow()
@@ -20,20 +17,25 @@ MainWindow::~MainWindow()
 
 void MainWindow::init()
 {
-    // set sender (write datagram to receiver)
-    UDPCOMM<STREAM, MOBILE> _joystick(qint16(3333));
-    _joystick.set_my_interface(QNetworkInterface::Ethernet);
+}
 
-    UDPCOMM<MOBILE, STREAM> _mobile(qint16(2222));
+
+void MainWindow::send_init()
+{
+    UDPCOMM<STREAM, MOBILE> _joystick(QNetworkInterface::Wifi, qint16(3333));
+    _joystick.add_send_address(QHostAddress(QString("10.108.1.1")), 2222);
 
     STREAM _stream;
-
-    qDebug() << sizeof(_stream);
     _stream.a = 1.0;
+
     _joystick.write_dataGram(_stream);
+}
 
-    // set receiver (echo datagram to sender)
+void MainWindow::receive_init()
+{
+    UDPCOMM<MOBILE, STREAM> _mobile(QNetworkInterface::Wifi, qint16(2222));
+    MOBILE mobile_status;
+    mobile_status.a = 1.0;
 
-    MOBILE _m;
-    _mobile.set_echo_dataGram(_m);
+    _mobile.write_dataGram(mobile_status);
 }

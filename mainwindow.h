@@ -19,6 +19,9 @@ public:
 
     void init();
 
+    void send_init();
+    void receive_init();
+
 private:
     Ui::MainWindow *ui;
 };

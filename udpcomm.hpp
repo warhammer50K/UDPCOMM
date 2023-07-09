@@ -18,47 +18,39 @@ template <typename SEND_STRUCT, typename RECEIVE_STRUCT>
 class UDPCOMM
 {
 public:
-    explicit UDPCOMM(qint16 _my_port);
+    explicit UDPCOMM(QNetworkInterface::InterfaceType _my_interface, qint16 _my_port);
     explicit UDPCOMM();
     ~UDPCOMM();
 
     void add_send_address(QHostAddress _address, qint16 _port);
-    void set_my_interface(QNetworkInterface type);
-
     void write_dataGram(SEND_STRUCT str);
     RECEIVE_STRUCT get_received_struct();
 
-    std::vector<senderInfo> senders_info;
-
 private:
+
     MyUdpSocket udp;
     std::mutex mtx;
+
+    QHostAddress my_address;
+    qint16 my_port;
+    QNetworkInterface::InterfaceType my_interface;
+
+    std::vector<senderInfo> senders_info;
+    size_t send_struct_size;
+
+    size_t receive_struct_size;
+    QByteArray receive_buffer;
+    RECEIVE_STRUCT receive_struct;
+
+    const uchar packet_head[2] = {(uchar)0xFF, (uchar)0xFD};
+    const uchar packet_tail[2] = {(uchar)0xFB, (uchar)0xFA};
+
+    void add_head_tail(QByteArray &data);
+    bool find_my_address(QHostAddress &_receive_address, QNetworkInterface::InterfaceType _type);
 
     std::atomic<bool> callbackFlag;
     std::thread * callbackThread = NULL;
     void callbackLoop();
-
-    void add_head_tail(QByteArray &data);
-    bool find_my_address(QHostAddress &_receive_address, QNetworkInterface _type);
-
-    int usage = USAGE_NONE;
-
-    QHostAddress send_address;
-    qint16 send_port;
-    size_t send_struct_size;
-    SEND_STRUCT send_struct;
-
-    QHostAddress my_address;
-    qint16 my_port;
-    QNetworkInterface my_interface = QNetworkInterface::Wifi;
-
-    size_t receive_struct_size;
-    RECEIVE_STRUCT receive_struct;
-    QByteArray receive_buffer;
-    RECEIVE_STRUCT real_receive_struct;
-
-    char packet_head[2] = {(char)0xFF, (char)0xFD};
-    char packet_tail[2] = {(char)0x01, (char)0x02};
 };
 
 
@@ -69,7 +61,8 @@ private:
 ///
 ////////////////////////////////////////////////////////
 template <typename SEND_STRUCT, typename RECEIVE_STRUCT>
-UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::UDPCOMM(qint16 _my_port) :
+UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::UDPCOMM(QNetworkInterface::InterfaceType _my_interface, qint16 _my_port) :
+    my_interface(_my_interface),
     my_port(_my_port)
 {
     // set bind address to cur Wifi network address
@@ -87,8 +80,6 @@ UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::UDPCOMM(qint16 _my_port) :
         return;
     }
 
-    qDebug() << "[UDP] bind address " << my_address << " port " << my_port;
-    usage = USAGE_RECEIVER;
     SEND_STRUCT T;
     send_struct_size = sizeof(T);
 
@@ -115,7 +106,7 @@ UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::~UDPCOMM()
 }
 
 template <typename SEND_STRUCT, typename RECEIVE_STRUCT>
-bool UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::find_my_address(QHostAddress &_receive_address, QNetworkInterface _type)
+bool UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::find_my_address(QHostAddress &_receive_address, QNetworkInterface::InterfaceType _type)
 {
     bool flag = false;
     for(auto interface:QNetworkInterface::allInterfaces())
@@ -124,8 +115,9 @@ bool UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::find_my_address(QHostAddress &_receiv
         {
             if(interface.type() == _type)
             {
-                printf("bind wifi address : %s Active Echo sender.\n", QString(address.ip().toString()).toStdString().c_str());
                 _receive_address = address.ip();
+
+                printf("[REGISTRATION] bind address: %s\n", address.ip().toString().toStdString().c_str());
                 flag = true;
             }
 
@@ -152,11 +144,11 @@ void UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::add_send_address(QHostAddress _addres
     _send.port = _port;
     senders_info.push_back(_send);
 
-    qDebug() << "add address " << _address << " " << _port;
+    printf("[REGISTRATION] add address: %s, port: %d\n", _address.toString().toStdString().c_str(), (int)_port);
 }
 
 template <typename SEND_STRUCT, typename RECEIVE_STRUCT>
-void UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::write_dataGram(SENDER str)
+void UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::write_dataGram(SEND_STRUCT str)
 {
     if(senders_info.size() == 0)
     {
@@ -169,13 +161,25 @@ void UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::write_dataGram(SENDER str)
     serialization_bytes.resize(struct_size);
     memcpy(serialization_bytes.data(), &str, struct_size);
 
-    add_head_tail(serialization_bytes);
+    QByteArray serialization_bytes_split;
+    serialization_bytes_split.resize(struct_size*2);
+
+    for(int i = 0; i < serialization_bytes.count(); ++i)
+    {
+        unsigned char lowByte = (serialization_bytes[i] & (unsigned char)0x0F);
+        unsigned char highByte = (serialization_bytes[i] &(unsigned char)0xF0);
+
+        serialization_bytes_split[2*i] = lowByte;
+        serialization_bytes_split[2*i+1] = highByte;
+    }
+
+    add_head_tail(serialization_bytes_split);
+
     for(size_t i=0; i<senders_info.size(); ++i)
     {
         QHostAddress address = senders_info[i].address;
         qint16 port = senders_info[i].port;
-        //qDebug() << "[RECEIVER] echo data to " << address  << " port " << port;
-        udp.socket.writeDatagram(serialization_bytes, address, port);
+        udp.socket.writeDatagram(serialization_bytes_split, address, port);
     }
 }
 
@@ -184,7 +188,7 @@ void UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::callbackLoop()
 {
     if(send_struct_size == 0 || receive_struct_size == 0)
     {
-        printf("struct size is zero.\n");
+        printf("[FAILED] base struct size is zero.\n");
         return;
     }
 
@@ -231,7 +235,7 @@ void UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::callbackLoop()
                 for(int p = 0; p < receive_buffer.size()-1; p++)
                 {
                     // header check
-                    if(receive_buffer[p] == (char)0xFF && receive_buffer[p+1] == (char)0xFD)
+                    if(receive_buffer[p] == packet_head[0] && receive_buffer[p+1] == packet_head[1])
                     {
                         receive_buffer.remove(0, p);
                         is_header = true;
@@ -239,18 +243,25 @@ void UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::callbackLoop()
                     }
                 }
 
-                const int packet_size = int(receive_struct_size) + 4;
+                const int packet_size = int(receive_struct_size * 2) + 4;
                 if(is_header && receive_buffer.size() >= packet_size)
                 {
-                    if(receive_buffer[packet_size-2] == (char)0x01 && receive_buffer[packet_size-1] == (char)0x02)
+                    if(receive_buffer[packet_size-2] == packet_tail[0] && receive_buffer[packet_size-1] == packet_tail[1])
                     {
-                        uchar* body = (uchar*)receive_buffer.data();
+                        QByteArray combine_buffer;
+                        combine_buffer.resize(receive_struct_size);
+                        for(int i=0; i<combine_buffer.count(); ++i)
+                        {
+                            unsigned char lowByte = (receive_buffer[2*i]);
+                            unsigned char highByte = (receive_buffer[2*i+1]);
+
+                            unsigned char val = lowByte + highByte;
+                            combine_buffer[i] = val;
+                        }
+
+                        uchar* body = (uchar*)combine_buffer.data();
                         memcpy(&receive_struct, &body[2], int(receive_struct_size));
                         receive_buffer.remove(0, packet_size);
-
-                        mtx.lock();
-                        real_receive_struct = receive_struct;
-                        mtx.unlock();
                     }
                 }
             }
@@ -260,10 +271,20 @@ void UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::callbackLoop()
 }
 
 template <typename SEND_STRUCT, typename RECEIVE_STRUCT>
+void UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::add_head_tail(QByteArray &data)
+{
+    data.push_front(packet_head[1]);
+    data.push_front(packet_head[0]);
+
+    data.push_back(packet_tail[0]);
+    data.push_back(packet_tail[1]);
+}
+
+template <typename SEND_STRUCT, typename RECEIVE_STRUCT>
 RECEIVE_STRUCT UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::get_received_struct()
 {
     mtx.lock();
-    RECEIVE_STRUCT _str = real_receive_struct;
+    RECEIVE_STRUCT _str = receive_struct;
     mtx.unlock();
 
     return _str;
