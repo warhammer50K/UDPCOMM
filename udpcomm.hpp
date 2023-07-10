@@ -42,8 +42,8 @@ private:
     QByteArray receive_buffer;
     RECEIVE_STRUCT receive_struct;
 
-    const uchar packet_head[2] = {(uchar)0xFF, (uchar)0xFD};
-    const uchar packet_tail[2] = {(uchar)0xFB, (uchar)0xFA};
+    const char packet_head[2] = {(char)0xFF, (char)0xFD};
+    const char packet_tail[2] = {(char)0xFB, (char)0xFA};
 
     void add_head_tail(QByteArray &data);
     bool find_my_address(QHostAddress &_receive_address, QNetworkInterface::InterfaceType _type);
@@ -166,8 +166,8 @@ void UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::write_dataGram(SEND_STRUCT str)
 
     for(int i = 0; i < serialization_bytes.count(); ++i)
     {
-        unsigned char lowByte = (serialization_bytes[i] & (unsigned char)0x0F);
-        unsigned char highByte = (serialization_bytes[i] &(unsigned char)0xF0);
+        char lowByte = (serialization_bytes[i] & (char)0x0F);
+        char highByte = (serialization_bytes[i] &(char)0xF0);
 
         serialization_bytes_split[2*i] = lowByte;
         serialization_bytes_split[2*i+1] = highByte;
@@ -252,15 +252,15 @@ void UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::callbackLoop()
                         combine_buffer.resize(receive_struct_size);
                         for(int i=0; i<combine_buffer.count(); ++i)
                         {
-                            unsigned char lowByte = (receive_buffer[2*i]);
-                            unsigned char highByte = (receive_buffer[2*i+1]);
+                            char lowByte = (receive_buffer[2*i]);
+                            char highByte = (receive_buffer[2*i+1]);
 
-                            unsigned char val = lowByte + highByte;
+                            char val = lowByte + highByte;
                             combine_buffer[i] = val;
                         }
 
-                        uchar* body = (uchar*)combine_buffer.data();
-                        memcpy(&receive_struct, &body[2], int(receive_struct_size));
+                        char* body = (char*)combine_buffer.data();
+                        memcpy(&receive_struct, &body[0], int(receive_struct_size));
                         receive_buffer.remove(0, packet_size);
                     }
                 }

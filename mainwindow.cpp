@@ -8,6 +8,7 @@ MainWindow::MainWindow(QWidget *parent)
     ui->setupUi(this);
 
     init();
+    send_init();
 }
 
 MainWindow::~MainWindow()
@@ -23,12 +24,19 @@ void MainWindow::init()
 void MainWindow::send_init()
 {
     UDPCOMM<STREAM, MOBILE> _joystick(QNetworkInterface::Wifi, qint16(3333));
-    _joystick.add_send_address(QHostAddress(QString("10.108.1.1")), 2222);
+    _joystick.add_send_address(QHostAddress(QString("192.168.2.4")), 2222);
+
+    UDPCOMM<MOBILE, STREAM> _mobile(QNetworkInterface::Wifi, qint16(2222));
+
 
     STREAM _stream;
     _stream.a = 1.0;
 
     _joystick.write_dataGram(_stream);
+
+    MOBILE mobile_status;
+    mobile_status.a = 1.0;
+    _mobile.write_dataGram(mobile_status);
 }
 
 void MainWindow::receive_init()
