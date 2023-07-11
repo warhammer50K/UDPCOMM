@@ -1,5 +1,7 @@
 #pragma once
 
+//#define USE_BYTE_SPLIT
+
 // qt
 #include <QtGamepad/QGamepad>
 #include <QTimer>
@@ -18,36 +20,57 @@ template <typename SEND_STRUCT, typename RECEIVE_STRUCT>
 class UDPCOMM
 {
 public:
+    /* if you use wifi network and want set port 3333, set this
+       UDPCOMM<(struct you want to send),(struct you want to receive)>(QNetworkInterface::InterfaceType::Wifi, 3333); */
     explicit UDPCOMM(QNetworkInterface::InterfaceType _my_interface, qint16 _my_port);
     explicit UDPCOMM();
     ~UDPCOMM();
 
+    /* use this function */
+    // add address(ip & port) you want send struct
     void add_send_address(QHostAddress _address, qint16 _port);
+
+    // you send struct to registrate address (add_send_address or echo)
     void write_dataGram(SEND_STRUCT str);
+
+    // get received struct
     RECEIVE_STRUCT get_received_struct();
 
+//////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////
 private:
-
+    // qt udp socket + tbb queue
     MyUdpSocket udp;
     std::mutex mtx;
 
+    // my network information
     QHostAddress my_address;
     qint16 my_port;
     QNetworkInterface::InterfaceType my_interface;
 
+    // registrated address (ip, port)
     std::vector<senderInfo> senders_info;
+
+    // your send struct
     size_t send_struct_size;
 
+    // your receive struct
     size_t receive_struct_size;
     QByteArray receive_buffer;
     RECEIVE_STRUCT receive_struct;
 
+    // data packet's head & tail
     const char packet_head[2] = {(char)0xFF, (char)0xFD};
     const char packet_tail[2] = {(char)0xFB, (char)0xFA};
 
+    // add head & tail to serialized data
     void add_head_tail(QByteArray &data);
+
+    // Network information found according to the information specified in the constructor
     bool find_my_address(QHostAddress &_receive_address, QNetworkInterface::InterfaceType _type);
 
+    // data receive thread
     std::atomic<bool> callbackFlag;
     std::thread * callbackThread = NULL;
     void callbackLoop();
@@ -161,6 +184,7 @@ void UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::write_dataGram(SEND_STRUCT str)
     serialization_bytes.resize(struct_size);
     memcpy(serialization_bytes.data(), &str, struct_size);
 
+#ifdef USE_BYTE_SPLIT
     QByteArray serialization_bytes_split;
     serialization_bytes_split.resize(struct_size*2);
 
@@ -174,12 +198,20 @@ void UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::write_dataGram(SEND_STRUCT str)
     }
 
     add_head_tail(serialization_bytes_split);
+#else
+    add_head_tail(serialization_bytes);
+#endif
 
     for(size_t i=0; i<senders_info.size(); ++i)
     {
         QHostAddress address = senders_info[i].address;
         qint16 port = senders_info[i].port;
+
+#ifdef USE_BYTE_SPLIT
         udp.socket.writeDatagram(serialization_bytes_split, address, port);
+#else
+        udp.socket.writeDatagram(serialization_bytes, address, port);
+#endif
     }
 }
 
@@ -242,12 +274,16 @@ void UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::callbackLoop()
                         break;
                     }
                 }
-
+#ifdef USE_BYTE_SPLIT
                 const int packet_size = int(receive_struct_size * 2) + 4;
+#else
+                const int packet_size = int(receive_struct_size) + 4;
+#endif
                 if(is_header && receive_buffer.size() >= packet_size)
                 {
                     if(receive_buffer[packet_size-2] == packet_tail[0] && receive_buffer[packet_size-1] == packet_tail[1])
                     {
+#ifdef USE_BYTE_SPLIT
                         QByteArray combine_buffer;
                         combine_buffer.resize(receive_struct_size);
                         for(int i=0; i<combine_buffer.count(); ++i)
@@ -261,6 +297,10 @@ void UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::callbackLoop()
 
                         char* body = (char*)combine_buffer.data();
                         memcpy(&receive_struct, &body[0], int(receive_struct_size));
+#else
+                        char* body = (char*)receive_buffer.data();
+                        memcpy(&receive_struct, &body[2], int(receive_struct_size));
+#endif
                         receive_buffer.remove(0, packet_size);
                     }
                 }
