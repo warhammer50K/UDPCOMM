@@ -1,10 +1,11 @@
 #pragma once
 
 //#define USE_BYTE_SPLIT
+#define USE_LINUX_NATIVE_SOCKET
 
 // qt
-#include <QtGamepad/QGamepad>
 #include <QTimer>
+#include <QNetworkInterface>
 
 // stl
 #include <thread>
@@ -14,7 +15,12 @@
 
 //my
 #include "global_defines.h"
-#include "myudpsocket.h"
+
+#ifdef USE_LINUX_NATIVE_SOCKET
+    #include "udpsocket.h"
+#else
+    #include "myudpsocket.h"
+#endif
 
 template <typename SEND_STRUCT, typename RECEIVE_STRUCT>
 class UDPCOMM
@@ -36,12 +42,13 @@ public:
     // get received struct
     RECEIVE_STRUCT get_received_struct();
 
-//////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////
 private:
     // qt udp socket + tbb queue
+#ifdef USE_LINUX_NATIVE_SOCKET
+    UdpSocket udp;
+#else
     MyUdpSocket udp;
+#endif
     std::mutex mtx;
 
     // my network information
@@ -97,11 +104,21 @@ UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::UDPCOMM(QNetworkInterface::InterfaceType _
     }
 
     // socket biding wifi address and port
+    #ifdef USE_LINUX_NATIVE_SOCKET
+    if(!udp.bind(my_address, my_port))
+    {
+        printf("[FAILED] failed socket binding.\n");
+        return;
+    }
+    #else
     if(!udp.socket.bind(my_address, my_port))
     {
         printf("[FAILED] failed socket binding.\n");
         return;
     }
+    #endif
+
+    printf("[UDPCOMM] bind, ip:%s, port:%d\n", my_address.toString().toLocal8Bit().data(), my_port);
 
     SEND_STRUCT T;
     send_struct_size = sizeof(T);
@@ -184,34 +201,40 @@ void UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::write_dataGram(SEND_STRUCT str)
     serialization_bytes.resize(struct_size);
     memcpy(serialization_bytes.data(), &str, struct_size);
 
-#ifdef USE_BYTE_SPLIT
+    #ifdef USE_BYTE_SPLIT
     QByteArray serialization_bytes_split;
     serialization_bytes_split.resize(struct_size*2);
-
     for(int i = 0; i < serialization_bytes.count(); ++i)
     {
         char lowByte = (serialization_bytes[i] & (char)0x0F);
-        char highByte = (serialization_bytes[i] &(char)0xF0);
+        char highByte = ((serialization_bytes[i] >> 4) &(char)0x0F);
 
         serialization_bytes_split[2*i] = lowByte;
         serialization_bytes_split[2*i+1] = highByte;
     }
-
     add_head_tail(serialization_bytes_split);
-#else
+    #else
     add_head_tail(serialization_bytes);
-#endif
+    #endif
 
     for(size_t i=0; i<senders_info.size(); ++i)
     {
         QHostAddress address = senders_info[i].address;
         qint16 port = senders_info[i].port;
 
-#ifdef USE_BYTE_SPLIT
-        udp.socket.writeDatagram(serialization_bytes_split, address, port);
-#else
-        udp.socket.writeDatagram(serialization_bytes, address, port);
-#endif
+        #ifdef USE_BYTE_SPLIT
+            #ifdef USE_LINUX_NATIVE_SOCKET
+                udp.writeDatagram(serialization_bytes_split, address, port);
+            #else
+                udp.socket.writeDatagram(serialization_bytes_split, address, port);
+            #endif
+        #else
+            #ifdef USE_LINUX_NATIVE_SOCKET
+                udp.writeDatagram(serialization_bytes, address, port);
+            #else
+                udp.socket.writeDatagram(serialization_bytes, address, port);
+            #endif
+        #endif
     }
 }
 
@@ -274,37 +297,40 @@ void UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::callbackLoop()
                         break;
                     }
                 }
-#ifdef USE_BYTE_SPLIT
+
+                #ifdef USE_BYTE_SPLIT
                 const int packet_size = int(receive_struct_size * 2) + 4;
-#else
+                #else
                 const int packet_size = int(receive_struct_size) + 4;
-#endif
+                #endif
+
                 if(is_header && receive_buffer.size() >= packet_size)
                 {
                     if(receive_buffer[packet_size-2] == packet_tail[0] && receive_buffer[packet_size-1] == packet_tail[1])
                     {
-#ifdef USE_BYTE_SPLIT
+                        #ifdef USE_BYTE_SPLIT
                         QByteArray combine_buffer;
-                        combine_buffer.resize(receive_struct_size);
-                        for(int i=0; i<combine_buffer.count(); ++i)
+                        for(int i=1; i<receive_buffer.size()-1; ++i)
                         {
-                            char lowByte = (receive_buffer[2*i]);
-                            char highByte = (receive_buffer[2*i+1]);
+                            char lowByte = (receive_buffer[2*i] & (char)0xFF);
+                            char highByte = ((receive_buffer[2*i+1] << 4) & (char)0xFF);
 
                             char val = lowByte + highByte;
-                            combine_buffer[i] = val;
+                            combine_buffer.push_back(val);
                         }
 
                         char* body = (char*)combine_buffer.data();
                         memcpy(&receive_struct, &body[0], int(receive_struct_size));
-#else
+                        #else
                         char* body = (char*)receive_buffer.data();
                         memcpy(&receive_struct, &body[2], int(receive_struct_size));
-#endif
+                        #endif
                         receive_buffer.remove(0, packet_size);
                     }
                 }
             }
+
+            continue;
         }
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(1));

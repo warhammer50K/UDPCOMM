@@ -7,6 +7,8 @@ MyUdpSocket::MyUdpSocket(QObject *parent) : QObject(parent)
 
 void MyUdpSocket::udp_receive_callback()
 {
+    printf("recv something\n");
+
     if(socket.hasPendingDatagrams())
     {
         QByteArray _buf;

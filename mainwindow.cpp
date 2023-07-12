@@ -24,7 +24,7 @@ void MainWindow::init()
 void MainWindow::send_init()
 {
     UDPCOMM<STREAM, MOBILE> _joystick(QNetworkInterface::Wifi, qint16(3333));
-    _joystick.add_send_address(QHostAddress(QString("192.168.2.4")), 2222);
+    _joystick.add_send_address(QHostAddress(QString("192.168.0.18")), 2222);
 
     UDPCOMM<MOBILE, STREAM> _mobile(QNetworkInterface::Wifi, qint16(2222));
 

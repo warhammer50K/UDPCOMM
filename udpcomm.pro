@@ -18,13 +18,15 @@ DEFINES += QT_DEPRECATED_WARNINGS
 SOURCES += \
     main.cpp \
     mainwindow.cpp \
-    myudpsocket.cpp
+    myudpsocket.cpp \
+    udpsocket.cpp
 
 HEADERS += \
     global_defines.h \
     mainwindow.h \
     myudpsocket.h \
-    udpcomm.hpp
+    udpcomm.hpp \
+    udpsocket.h
 
 FORMS += \
     mainwindow.ui
