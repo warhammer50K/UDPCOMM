@@ -1,88 +1,102 @@
 #pragma once
 
+// Uncomment to split every payload byte into two half-bytes on the wire
+// (for links/parsers that cannot handle arbitrary binary data).
 //#define USE_BYTE_SPLIT
-#define USE_LINUX_NATIVE_SOCKET
 
-// qt
-#include <QTimer>
-#include <QNetworkInterface>
+// POSIX
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <unistd.h>
 
 // stl
-#include <thread>
-#include <mutex>
 #include <atomic>
-#include <iostream>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
 
-//my
-#include "global_defines.h"
+// which local interface to bind to
+enum class NetInterface
+{
+    Any,      // 0.0.0.0
+    Ethernet, // first wired, non-loopback interface
+    Wifi,     // first wireless interface (detected via /sys/class/net/<if>/wireless)
+    Loopback  // 127.0.0.1
+};
 
-#ifdef USE_LINUX_NATIVE_SOCKET
-    #include "udpsocket.h"
-#else
-    #include "myudpsocket.h"
-#endif
+struct senderInfo
+{
+    std::string address;
+    uint16_t port = 0;
+};
 
 template <typename SEND_STRUCT, typename RECEIVE_STRUCT>
 class UDPCOMM
 {
 public:
     /* if you use wifi network and want set port 3333, set this
-       UDPCOMM<(struct you want to send),(struct you want to receive)>(QNetworkInterface::InterfaceType::Wifi, 3333); */
-    explicit UDPCOMM(QNetworkInterface::InterfaceType _my_interface, qint16 _my_port);
-    explicit UDPCOMM();
+       UDPCOMM<(struct you want to send),(struct you want to receive)>(NetInterface::Wifi, 3333); */
+    explicit UDPCOMM(NetInterface _my_interface, uint16_t _my_port);
+
+    // bind to an explicit local address, e.g. UDPCOMM<S,R>("127.0.0.1", 3333)
+    explicit UDPCOMM(const std::string &_bind_ip, uint16_t _my_port);
+
     ~UDPCOMM();
 
     /* use this function */
     // add address(ip & port) you want send struct
-    void add_send_address(QHostAddress _address, qint16 _port);
+    void add_send_address(const std::string &_address, uint16_t _port);
 
-    // you send struct to registrate address (add_send_address or echo)
-    void write_dataGram(SEND_STRUCT str);
+    // you send struct to registrated address (add_send_address or auto-registered peer)
+    void write_dataGram(const SEND_STRUCT &str);
 
-    // get received struct
+    // get received struct (latest value, filled by the background thread)
     RECEIVE_STRUCT get_received_struct();
 
+    // false if socket creation/binding failed in the constructor
+    bool is_bound() const { return sock >= 0; }
+
 private:
-    // qt udp socket + tbb queue
-#ifdef USE_LINUX_NATIVE_SOCKET
-    UdpSocket udp;
-#else
-    MyUdpSocket udp;
-#endif
-    std::mutex mtx;
+    int sock = -1;
+    std::string my_address;
+    uint16_t my_port = 0;
 
-    // my network information
-    QHostAddress my_address;
-    qint16 my_port;
-    QNetworkInterface::InterfaceType my_interface;
-
-    // registrated address (ip, port)
+    // registrated address (ip, port); guarded by senders_mtx
     std::vector<senderInfo> senders_info;
+    std::mutex senders_mtx;
 
-    // your send struct
-    size_t send_struct_size;
-
-    // your receive struct
-    size_t receive_struct_size;
-    QByteArray receive_buffer;
+    // latest received struct; guarded by recv_mtx
     RECEIVE_STRUCT receive_struct;
+    std::mutex recv_mtx;
+
+    // partial-datagram reassembly buffer (receive thread only)
+    std::vector<char> receive_buffer;
 
     // data packet's head & tail
     const char packet_head[2] = {(char)0xFF, (char)0xFD};
     const char packet_tail[2] = {(char)0xFB, (char)0xFA};
 
-    // add head & tail to serialized data
-    void add_head_tail(QByteArray &data);
-
-    // Network information found according to the information specified in the constructor
-    bool find_my_address(QHostAddress &_receive_address, QNetworkInterface::InterfaceType _type);
-
     // data receive thread
-    std::atomic<bool> callbackFlag;
-    std::thread * callbackThread = NULL;
-    void callbackLoop();
-};
+    std::atomic<bool> callbackFlag{false};
+    std::thread callbackThread;
 
+    void init(const std::string &_bind_ip, uint16_t _my_port);
+    void callbackLoop();
+    void parse_frames();
+    void register_sender(const std::string &_address, uint16_t _port);
+
+    // Network information found according to the interface type
+    static bool find_my_address(std::string &_receive_address, NetInterface _type);
+};
 
 ////////////////////////////////////////////////////////
 ///
@@ -90,268 +104,324 @@ private:
 /// template class
 ///
 ////////////////////////////////////////////////////////
+
 template <typename SEND_STRUCT, typename RECEIVE_STRUCT>
-UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::UDPCOMM(QNetworkInterface::InterfaceType _my_interface, qint16 _my_port) :
-    my_interface(_my_interface),
-    my_port(_my_port)
+UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::UDPCOMM(NetInterface _my_interface, uint16_t _my_port)
 {
-    // set bind address to cur Wifi network address
-    bool flag = find_my_address(my_address, my_interface);
-    if(flag == false)
+    std::string bind_ip;
+    if (!find_my_address(bind_ip, _my_interface))
     {
         printf("[FAILED] failed bind ip.\n");
         return;
     }
+    init(bind_ip, _my_port);
+}
 
-    // socket biding wifi address and port
-    #ifdef USE_LINUX_NATIVE_SOCKET
-    if(!udp.bind(my_address, my_port))
+template <typename SEND_STRUCT, typename RECEIVE_STRUCT>
+UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::UDPCOMM(const std::string &_bind_ip, uint16_t _my_port)
+{
+    init(_bind_ip, _my_port);
+}
+
+template <typename SEND_STRUCT, typename RECEIVE_STRUCT>
+void UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::init(const std::string &_bind_ip, uint16_t _my_port)
+{
+    my_address = _bind_ip;
+    my_port = _my_port;
+
+    sock = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0)
     {
-        printf("[FAILED] failed socket binding.\n");
+        printf("[FAILED] failed socket creation.\n");
         return;
     }
-    #else
-    if(!udp.socket.bind(my_address, my_port))
+
+    sockaddr_in server_addr;
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(my_port);
+    if (inet_pton(AF_INET, my_address.c_str(), &server_addr.sin_addr) != 1)
     {
-        printf("[FAILED] failed socket binding.\n");
+        printf("[FAILED] invalid bind ip: %s\n", my_address.c_str());
+        ::close(sock);
+        sock = -1;
         return;
     }
-    #endif
 
-    printf("[UDPCOMM] bind, ip:%s, port:%d\n", my_address.toString().toLocal8Bit().data(), my_port);
+    if (::bind(sock, (sockaddr *)&server_addr, sizeof(server_addr)) == -1)
+    {
+        printf("[FAILED] failed socket binding.\n");
+        ::close(sock);
+        sock = -1;
+        return;
+    }
 
-    SEND_STRUCT T;
-    send_struct_size = sizeof(T);
+    // recv timeout so the receive thread can check the stop flag periodically
+    timeval tv;
+    tv.tv_sec = 0;
+    tv.tv_usec = 100 * 1000;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-    RECEIVE_STRUCT R;
-    receive_struct_size = sizeof(R);
+    printf("[UDPCOMM] bind, ip:%s, port:%d\n", my_address.c_str(), (int)my_port);
 
     // start callback loop
-    if (callbackThread == NULL)
-    {
-        callbackFlag = true;
-        callbackThread = new std::thread(&UDPCOMM::callbackLoop, this);
-    }
+    callbackFlag = true;
+    callbackThread = std::thread(&UDPCOMM::callbackLoop, this);
 }
 
 template <typename SEND_STRUCT, typename RECEIVE_STRUCT>
 UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::~UDPCOMM()
 {
-    if(callbackThread != NULL)
+    if (callbackThread.joinable())
     {
         callbackFlag = false;
-        callbackThread->join();
-        callbackThread = NULL;
+        callbackThread.join();
+    }
+
+    if (sock >= 0)
+    {
+        ::close(sock);
     }
 }
 
 template <typename SEND_STRUCT, typename RECEIVE_STRUCT>
-bool UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::find_my_address(QHostAddress &_receive_address, QNetworkInterface::InterfaceType _type)
+bool UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::find_my_address(std::string &_receive_address, NetInterface _type)
 {
-    bool flag = false;
-    for(auto interface:QNetworkInterface::allInterfaces())
+    if (_type == NetInterface::Any)
     {
-        for(QNetworkAddressEntry address:interface.addressEntries())
+        _receive_address = "0.0.0.0";
+        return true;
+    }
+
+    ifaddrs *ifaddr = nullptr;
+    if (getifaddrs(&ifaddr) == -1)
+    {
+        return false;
+    }
+
+    bool flag = false;
+    for (ifaddrs *ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next)
+    {
+        if (ifa->ifa_addr == nullptr || ifa->ifa_addr->sa_family != AF_INET)
         {
-            if(interface.type() == _type)
-            {
-                _receive_address = address.ip();
-
-                printf("[REGISTRATION] bind address: %s\n", address.ip().toString().toStdString().c_str());
-                flag = true;
-            }
-
-            if(flag == true)
-            {
-                break;
-            }
+            continue;
         }
 
-        if(flag == true)
+        const bool is_loopback = (ifa->ifa_flags & IFF_LOOPBACK) != 0;
+
+        // wireless interfaces expose /sys/class/net/<name>/wireless
+        struct stat st;
+        const std::string wireless_path = std::string("/sys/class/net/") + ifa->ifa_name + "/wireless";
+        const bool is_wireless = (stat(wireless_path.c_str(), &st) == 0);
+
+        bool match = false;
+        switch (_type)
         {
+        case NetInterface::Loopback: match = is_loopback; break;
+        case NetInterface::Wifi:     match = is_wireless; break;
+        case NetInterface::Ethernet: match = !is_loopback && !is_wireless; break;
+        default: break;
+        }
+
+        if (match)
+        {
+            char ip[INET_ADDRSTRLEN];
+            sockaddr_in *addr = (sockaddr_in *)ifa->ifa_addr;
+            inet_ntop(AF_INET, &addr->sin_addr, ip, sizeof(ip));
+            _receive_address = ip;
+
+            printf("[REGISTRATION] bind address: %s (%s)\n", ip, ifa->ifa_name);
+            flag = true;
             break;
         }
     }
 
+    freeifaddrs(ifaddr);
     return flag;
 }
 
 template <typename SEND_STRUCT, typename RECEIVE_STRUCT>
-void UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::add_send_address(QHostAddress _address, qint16 _port)
+void UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::add_send_address(const std::string &_address, uint16_t _port)
 {
+    register_sender(_address, _port);
+    printf("[REGISTRATION] add address: %s, port: %d\n", _address.c_str(), (int)_port);
+}
+
+template <typename SEND_STRUCT, typename RECEIVE_STRUCT>
+void UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::register_sender(const std::string &_address, uint16_t _port)
+{
+    std::lock_guard<std::mutex> lock(senders_mtx);
+    for (size_t i = 0; i < senders_info.size(); ++i)
+    {
+        if (senders_info[i].address == _address && senders_info[i].port == _port)
+        {
+            return;
+        }
+    }
+
     senderInfo _send;
     _send.address = _address;
     _send.port = _port;
     senders_info.push_back(_send);
-
-    printf("[REGISTRATION] add address: %s, port: %d\n", _address.toString().toStdString().c_str(), (int)_port);
 }
 
 template <typename SEND_STRUCT, typename RECEIVE_STRUCT>
-void UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::write_dataGram(SEND_STRUCT str)
+void UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::write_dataGram(const SEND_STRUCT &str)
 {
-    if(senders_info.size() == 0)
+    if (sock < 0)
+    {
+        return;
+    }
+
+    std::vector<senderInfo> targets;
+    {
+        std::lock_guard<std::mutex> lock(senders_mtx);
+        targets = senders_info;
+    }
+
+    if (targets.empty())
     {
         printf("[FAILED] senders_info size is zero.\n");
         return;
     }
 
-    QByteArray serialization_bytes;
-    size_t struct_size = send_struct_size;
-    serialization_bytes.resize(struct_size);
-    memcpy(serialization_bytes.data(), &str, struct_size);
+    std::vector<char> payload(sizeof(SEND_STRUCT));
+    memcpy(payload.data(), &str, sizeof(SEND_STRUCT));
 
-    #ifdef USE_BYTE_SPLIT
-    QByteArray serialization_bytes_split;
-    serialization_bytes_split.resize(struct_size*2);
-    for(int i = 0; i < serialization_bytes.count(); ++i)
+#ifdef USE_BYTE_SPLIT
+    std::vector<char> split(payload.size() * 2);
+    for (size_t i = 0; i < payload.size(); ++i)
     {
-        char lowByte = (serialization_bytes[i] & (char)0x0F);
-        char highByte = ((serialization_bytes[i] >> 4) &(char)0x0F);
-
-        serialization_bytes_split[2*i] = lowByte;
-        serialization_bytes_split[2*i+1] = highByte;
+        split[2 * i] = payload[i] & (char)0x0F;
+        split[2 * i + 1] = (payload[i] >> 4) & (char)0x0F;
     }
-    add_head_tail(serialization_bytes_split);
-    #else
-    add_head_tail(serialization_bytes);
-    #endif
+    payload.swap(split);
+#endif
 
-    for(size_t i=0; i<senders_info.size(); ++i)
+    // add head & tail to serialized data
+    std::vector<char> packet;
+    packet.reserve(payload.size() + 4);
+    packet.push_back(packet_head[0]);
+    packet.push_back(packet_head[1]);
+    packet.insert(packet.end(), payload.begin(), payload.end());
+    packet.push_back(packet_tail[0]);
+    packet.push_back(packet_tail[1]);
+
+    for (size_t i = 0; i < targets.size(); ++i)
     {
-        QHostAddress address = senders_info[i].address;
-        qint16 port = senders_info[i].port;
+        sockaddr_in client_addr;
+        memset(&client_addr, 0, sizeof(client_addr));
+        client_addr.sin_family = AF_INET;
+        client_addr.sin_port = htons(targets[i].port);
+        if (inet_pton(AF_INET, targets[i].address.c_str(), &client_addr.sin_addr) != 1)
+        {
+            continue;
+        }
 
-        #ifdef USE_BYTE_SPLIT
-            #ifdef USE_LINUX_NATIVE_SOCKET
-                udp.writeDatagram(serialization_bytes_split, address, port);
-            #else
-                udp.socket.writeDatagram(serialization_bytes_split, address, port);
-            #endif
-        #else
-            #ifdef USE_LINUX_NATIVE_SOCKET
-                udp.writeDatagram(serialization_bytes, address, port);
-            #else
-                udp.socket.writeDatagram(serialization_bytes, address, port);
-            #endif
-        #endif
+        ::sendto(sock, packet.data(), packet.size(), 0, (const sockaddr *)&client_addr, sizeof(client_addr));
     }
 }
 
 template <typename SEND_STRUCT, typename RECEIVE_STRUCT>
 void UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::callbackLoop()
 {
-    if(send_struct_size == 0 || receive_struct_size == 0)
-    {
-        printf("[FAILED] base struct size is zero.\n");
-        return;
-    }
+    std::vector<char> buf(2048);
 
-    while(callbackFlag)
+    while (callbackFlag)
     {
-        senderInfo_with_data _sender;
-        if(udp.buf_que.try_pop(_sender))
+        sockaddr_in client_addr;
+        memset(&client_addr, 0, sizeof(client_addr));
+        socklen_t len = sizeof(client_addr);
+
+        ssize_t n = ::recvfrom(sock, buf.data(), buf.size(), 0, (sockaddr *)&client_addr, &len);
+        if (n <= 0)
         {
-            senderInfo _send;
-            _send.address = _sender.address;
-            _send.port= _sender.port;
-
-            if(senders_info.size() == 0)
-            {
-                senders_info.push_back(_send);
-            }
-            else
-            {
-                bool flag = true;
-                for(size_t i = 0; i < senders_info.size(); ++i)
-                {
-                    if(senders_info[i].address == _sender.address)
-                    {
-                        flag = false;
-                    }
-                }
-
-                if(flag == true)
-                {
-                    senders_info.push_back(_send);
-                }
-            }
-
-            QByteArray _buf = _sender.buf;
-            if(_buf.size() > 0)
-            {
-                receive_buffer.append(_buf);
-                if(receive_buffer.size() < 2)
-                {
-                    return;
-                }
-
-                bool is_header = false;
-                for(int p = 0; p < receive_buffer.size()-1; p++)
-                {
-                    // header check
-                    if(receive_buffer[p] == packet_head[0] && receive_buffer[p+1] == packet_head[1])
-                    {
-                        receive_buffer.remove(0, p);
-                        is_header = true;
-                        break;
-                    }
-                }
-
-                #ifdef USE_BYTE_SPLIT
-                const int packet_size = int(receive_struct_size * 2) + 4;
-                #else
-                const int packet_size = int(receive_struct_size) + 4;
-                #endif
-
-                if(is_header && receive_buffer.size() >= packet_size)
-                {
-                    if(receive_buffer[packet_size-2] == packet_tail[0] && receive_buffer[packet_size-1] == packet_tail[1])
-                    {
-                        #ifdef USE_BYTE_SPLIT
-                        QByteArray combine_buffer;
-                        for(int i=1; i<receive_buffer.size()-1; ++i)
-                        {
-                            char lowByte = (receive_buffer[2*i] & (char)0xFF);
-                            char highByte = ((receive_buffer[2*i+1] << 4) & (char)0xFF);
-
-                            char val = lowByte + highByte;
-                            combine_buffer.push_back(val);
-                        }
-
-                        char* body = (char*)combine_buffer.data();
-                        memcpy(&receive_struct, &body[0], int(receive_struct_size));
-                        #else
-                        char* body = (char*)receive_buffer.data();
-                        memcpy(&receive_struct, &body[2], int(receive_struct_size));
-                        #endif
-                        receive_buffer.remove(0, packet_size);
-                    }
-                }
-            }
-
-            continue;
+            continue; // timeout (SO_RCVTIMEO) or error — re-check stop flag
         }
+
+        // auto-register the peer so replies work without add_send_address()
+        char ip[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &client_addr.sin_addr, ip, sizeof(ip));
+        register_sender(ip, ntohs(client_addr.sin_port));
+
+        receive_buffer.insert(receive_buffer.end(), buf.data(), buf.data() + n);
+        parse_frames();
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
 }
 
 template <typename SEND_STRUCT, typename RECEIVE_STRUCT>
-void UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::add_head_tail(QByteArray &data)
+void UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::parse_frames()
 {
-    data.push_front(packet_head[1]);
-    data.push_front(packet_head[0]);
+#ifdef USE_BYTE_SPLIT
+    const size_t body_size = sizeof(RECEIVE_STRUCT) * 2;
+#else
+    const size_t body_size = sizeof(RECEIVE_STRUCT);
+#endif
+    const size_t packet_size = body_size + 4;
 
-    data.push_back(packet_tail[0]);
-    data.push_back(packet_tail[1]);
+    while (true)
+    {
+        // header check — drop garbage before the first head marker
+        size_t head_pos = std::string::npos;
+        for (size_t p = 0; p + 1 < receive_buffer.size(); ++p)
+        {
+            if (receive_buffer[p] == packet_head[0] && receive_buffer[p + 1] == packet_head[1])
+            {
+                head_pos = p;
+                break;
+            }
+        }
+
+        if (head_pos == std::string::npos)
+        {
+            receive_buffer.clear();
+            return;
+        }
+
+        if (head_pos > 0)
+        {
+            receive_buffer.erase(receive_buffer.begin(), receive_buffer.begin() + head_pos);
+        }
+
+        if (receive_buffer.size() < packet_size)
+        {
+            return; // wait for the rest of the packet
+        }
+
+        if (receive_buffer[packet_size - 2] == packet_tail[0] && receive_buffer[packet_size - 1] == packet_tail[1])
+        {
+            const char *body = receive_buffer.data() + 2;
+
+#ifdef USE_BYTE_SPLIT
+            std::vector<char> combined(sizeof(RECEIVE_STRUCT));
+            for (size_t i = 0; i < combined.size(); ++i)
+            {
+                const char low = body[2 * i] & (char)0x0F;
+                const char high = (body[2 * i + 1] & (char)0x0F) << 4;
+                combined[i] = low | high;
+            }
+            body = combined.data();
+
+            std::lock_guard<std::mutex> lock(recv_mtx);
+            memcpy(&receive_struct, body, sizeof(RECEIVE_STRUCT));
+#else
+            std::lock_guard<std::mutex> lock(recv_mtx);
+            memcpy(&receive_struct, body, sizeof(RECEIVE_STRUCT));
+#endif
+
+            receive_buffer.erase(receive_buffer.begin(), receive_buffer.begin() + packet_size);
+        }
+        else
+        {
+            // corrupt frame — skip this head marker and resync
+            receive_buffer.erase(receive_buffer.begin(), receive_buffer.begin() + 2);
+        }
+    }
 }
 
 template <typename SEND_STRUCT, typename RECEIVE_STRUCT>
 RECEIVE_STRUCT UDPCOMM<SEND_STRUCT, RECEIVE_STRUCT>::get_received_struct()
 {
-    mtx.lock();
-    RECEIVE_STRUCT _str = receive_struct;
-    mtx.unlock();
-
-    return _str;
+    std::lock_guard<std::mutex> lock(recv_mtx);
+    return receive_struct;
 }
