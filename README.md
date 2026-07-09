@@ -60,3 +60,7 @@ Structs are sent as raw memory, so both ends must agree on the exact layout:
 - Compile both peers with the same packing/alignment; consider `#pragma pack` or fixed-width members.
 - Endianness is not converted — fine between x86/ARM Linux machines in practice, but keep it in mind for exotic targets.
 - One datagram per struct: keep structs under the path MTU (~1400 bytes) to avoid IP fragmentation.
+
+## License
+
+[MIT](LICENSE)
